@@ -1,0 +1,65 @@
+
+C-MINUS COMPILATION: ../../basic/test_cases/p8_2.txt
+
+Syntax tree:
+  Function Declaration: name = main, return type = int
+    Void Parameter
+    Compound Statement:
+      Variable Declaration: name = x, type = void
+      Return Statement:
+        Const: 0
+
+Building Symbol Table...
+
+		debugmode-> found: attr.name has  node (at case ParamK:  in analyze.c)
+Symbol error at line 0: void type parameter is not allowed
+Symbol error at line 3: variable should have non-void type
+
+Symbol table:
+
+
+	[All Each Scopes Name:	 |  (null) |  input |  output |  main | | ]
+<global scope> (nested level: 0)
+Symbol Name    Sym.Type  Data Type  MemLocation  Line Numbers
+-------------  --------  ---------- ------------ ------------
+main           Function  Integer          2	   1 
+input          Function  Integer          0	  -1 
+output         Function  Void             1	  -1 
+
+FName RType PName PType
+----- ----- ----- -----
+
+main	 int	   	 void	
+
+input	 int	   	 void	
+
+output	 void	
+		value	 int	
+
+function name: input (nested level: 1)
+Symbol Name    Sym.Type  Data Type  MemLocation  Line Numbers
+-------------  --------  ---------- ------------ ------------
+
+FName RType PName PType
+----- ----- ----- -----
+
+function name: output (nested level: 1)
+Symbol Name    Sym.Type  Data Type  MemLocation  Line Numbers
+-------------  --------  ---------- ------------ ------------
+value          Variable  Void             0	  -1 
+
+FName RType PName PType
+----- ----- ----- -----
+
+function name: main (nested level: 1)
+Symbol Name    Sym.Type  Data Type  MemLocation  Line Numbers
+-------------  --------  ---------- ------------ ------------
+               Variable  Integer          0	   0 
+
+FName RType PName PType
+----- ----- ----- -----
+
+
+Checking Types...
+
+Type Checking Finished!
