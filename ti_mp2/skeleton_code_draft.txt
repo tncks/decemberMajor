@@ -1,0 +1,438 @@
+#include <stdint.h>
+#include <stdbool.h>
+#define WHEEL_TICKS_PER_REV 20    // 바퀴 1회전당 타코미터 신호 수
+#define TIMER_CLOCK_FREQ 32768    // 타이머 클럭 주파수 (: 32.768kHz)
+
+
+typedef enum {
+    TURN_ON_STATE,
+    HALF_INPUT_STATE,
+    STAND_BY_STATE,
+    RUNNING_STATE,
+    FINISH_STATE
+} RobotState;
+
+
+RobotState currentState = TURN_ON_STATE;
+int N = 0, M = 0;
+int currentStep = 0;
+int timerCount = 0; 
+int lastCapture = 0;
+int currentCapture = 0;
+int tickCount = 0;  
+
+
+void LED_DisplayState(RobotState state);
+void Coordinate_Input();
+void FSM_Run();
+int Button_LeftPressed();
+int Button_RightPressed();
+void Additional_Chore_Init();
+void Move_To_Coordinate(int n, int m);
+void Execute_Path();
+int LineSensor_DetectHorizontalLine();
+int LineSensor_DetectVerticalLine();
+void Motor_TurnLeft90();
+void Motor_TurnRight90();
+void startTurn();
+void TA3_N_IRQHandler(void);
+void Tachometer_Init(void);
+
+// 경로 실행 함수: (n, 0) → (n, m) → (5, m) → 도착점
+void Execute_Path() {
+    // 1단계: (n, 0)으로 이동
+    Move_To_Coordinate(N, 0);
+
+    // 2단계: (n, m)으로 이동
+    Move_To_Coordinate(N, M);
+
+    // 3단계: (5, m)으로 이동
+    Move_To_Coordinate(5, M);
+
+    // 도착점 감지 및 종료
+    while (!LineSensor_DetectFinishLine()) {
+        Motor_MoveForward(); // 도착점이 감지될 때까지 전진
+    }
+    Motor_Stop();
+    currentState = FINISH_STATE; // 상태를 FINISH_STATE로 변경
+}
+
+// 좌표로 이동하는 함수: x축(y축 수직 이동), y축(수평 이동)
+void Move_To_Coordinate(int n, int m) {
+    static uint8_t currentX = 0, currentY = 0; // 현재 좌표 추적
+
+    // x축 이동: 세로선 감지
+    while (currentX < x) {
+        Motor_MoveForward();
+        if (LineSensor_DetectVerticalLine()) {
+            currentX++;
+            if (currentX < x) {
+                Motor_MoveForward();
+            }
+        }
+    }
+    Motor_Stop();
+
+    // 90도 왼쪽 회전 → 수평 이동 준비
+    Motor_TurnLeft90();
+
+    // y축 이동: 가로선 감지
+    while (currentY < y) {
+        Motor_MoveForward();
+        if (LineSensor_DetectHorizontalLine()) {
+            currentY++;
+            if (currentY < y) {
+                Motor_MoveForward();
+            }
+        }
+    }
+    Motor_Stop();
+
+    // 원래 방향으로 90도 오른쪽 회전
+    Motor_TurnRight90();
+}
+
+
+
+void Motor_TurnLeft90() {
+    // 모터를 왼쪽으로 90도 회전
+}
+
+void Motor_TurnRight90() {
+    // 모터를 오른쪽으로 90도 회전
+}
+
+
+
+// 라인 센서 감지 함수들
+int LineSensor_DetectHorizontalLine() {
+    // 가로 방향 라인 감지 시 true 반환
+    return (P4->IN & BIT0); // 예시: 라인 센서 입력 핀
+}
+
+int LineSensor_DetectVerticalLine() {
+    // 세로 방향 라인 감지 시 true 반환
+    return (P4->IN & BIT1); // 예시: 라인 센서 입력 핀
+}
+
+
+
+// LED 제어 함수
+void LED_DisplayState(RobotState state) {
+    switch (state) {
+        case TURN_ON_STATE:
+            P2->OUT &= ~(BIT0 | BIT1 | BIT2); // 모든 LED 끄기
+            break;
+
+        case HALF_INPUT_STATE:
+            P2->OUT |= BIT0;   // Red LED 켜기
+            P2->OUT &= ~(BIT1 | BIT2); // 나머지 LED 끄기
+            break;
+
+        case STAND_BY_STATE:
+            P2->OUT |= BIT1;   // Green LED 켜기
+            P2->OUT &= ~(BIT0 | BIT2); // 나머지 LED 끄기
+            break;
+
+        case RUNNING_STATE:
+            // Red, Blue LED를 1초 간격으로 교대로 점멸
+            if (timerCount % 2 == 0) {
+                P2->OUT |= BIT0;  // Red LED 켜기
+                P2->OUT &= ~BIT2; // Blue LED 끄기
+            } else {
+                P2->OUT |= BIT2;  // Blue LED 켜기
+                P2->OUT &= ~BIT0; // Red LED 끄기
+            }
+            break;
+
+        case FINISH_STATE:
+            // White LED를 1초 간격으로 점멸
+            if (timerCount % 2 == 0) {
+                P2->OUT |= (BIT0 | BIT1 | BIT2); // Red, Green, Blue 켜기 (White LED)
+            } else {
+                P2->OUT &= ~(BIT0 | BIT1 | BIT2); // 모든 LED 끄기
+            }
+            break;
+    }
+}
+
+// 좌표 입력 함수
+void Coordinate_Input() {
+    static uint8_t inputStage = 0; // 0: N 입력, 1: M 입력
+
+    if (Button_LeftPressed()) {
+        if (inputStage == 0) {
+            N++; // N 증가
+        } else {
+            M++; // M 증가
+        }
+    }
+
+    if (Button_RightPressed()) {
+        if (inputStage == 0) {
+            inputStage = 1; // M 입력 단계로 전환
+        } else {
+            currentState = STAND_BY_STATE; // 좌표 입력 완료
+            LED_DisplayState(currentState);
+        }
+    }
+}
+
+// 스위치 입력 감지 함수 (모의 구현)
+int Button_LeftPressed() {
+    return (P1->IN & BIT1) == 0; // P1.1 버튼 눌림 감지
+}
+
+int Button_RightPressed() {
+    return (P1->IN & BIT4) == 0; // P1.4 버튼 눌림 감지
+}
+
+// 타이머 초기화 함수
+void Timer_Init() {
+    TIMER_A0->CTL = TIMER_A_CTL_TASSEL_1 | TIMER_A_CTL_MC_1 | TIMER_A_CTL_CLR; // ACLK, Up Mode
+    TIMER_A0->CCR[0] = 32768 - 1; // 1초 간격 (32.768 kHz)
+    TIMER_A0->CCTL[0] = TIMER_A_CCTLN_CCIE; // 인터럽트 활성화
+    NVIC_EnableIRQ(TA0_0_IRQn); // 인터럽트 허용
+}
+
+// 타이머 인터럽트 핸들러
+void TA0_0_IRQHandler() {
+    TIMER_A0->CCTL[0] &= ~TIMER_A_CCTLN_CCIFG; // 인터럽트 플래그 클리어
+    timerCount++;
+    if (currentState == RUNNING_STATE || currentState == FINISH_STATE) {
+        LED_DisplayState(currentState); // LED 상태 업데이트
+    }
+}
+
+// 하드웨어 초기화 함수
+void Additional_Chore_Init() {
+    // LED 포트 초기화
+    P2->DIR |= (BIT0 | BIT1 | BIT2); // P2.0, P2.1, P2.2 출력 설정
+    P2->OUT &= ~(BIT0 | BIT1 | BIT2); // LED 초기화 (모두 끔)
+
+    // 스위치 포트 초기화
+    P1->DIR &= ~(BIT1 | BIT4); // P1.1, P1.4 입력 설정
+    P1->REN |= (BIT1 | BIT4); // 풀업/풀다운 활성화
+    P1->OUT |= (BIT1 | BIT4); // 풀업 설정
+
+    Timer_Init(); // 타이머 초기화
+}
+
+// 상태 머신 실행 함수
+void FSM_Run() {
+    switch (currentState) {
+        case TURN_ON_STATE:
+            LED_DisplayState(TURN_ON_STATE);
+            currentState = HALF_INPUT_STATE;
+            break;
+
+        case HALF_INPUT_STATE:
+            Coordinate_Input();
+            LED_DisplayState(HALF_INPUT_STATE);
+            break;
+
+        case STAND_BY_STATE:
+            LED_DisplayState(STAND_BY_STATE);
+            // 대기 상태에서 추가 동작 없음
+            break;
+
+        case RUNNING_STATE:
+    		LED_DisplayState(RUNNING_STATE);
+    		Execute_Path(); // 경로 실행 함수 호출
+    		break;
+
+
+        case FINISH_STATE:
+            LED_DisplayState(FINISH_STATE);
+            // 완료 상태에서 추가 동작 없음
+            break;
+    }
+}
+
+
+
+// 타코미터 인터럽트 핸들러 (Input Capture 발생 시 호출)
+void TA3_N_IRQHandler(void) {
+    /*if (TIMER_A3->CCTL[0] & TIMER_A_CCTLN_CCIFG) {  // Input Capture 플래그 확인
+        currentCapture = TIMER_A3->CCR[0];          // 타이머 CCR 값 저장
+        tickCount++;                               // 타코미터 신호 카운트 증가
+
+        TIMER_A3->CCTL[0] &= ~TIMER_A_CCTLN_CCIFG;  // 플래그 클리어
+    }*/
+}
+
+
+
+// 타코미터 초기화 함수
+void Tachometer_Init(void) {
+    // Timer_A Input Capture 설정 및 // 인터럽트 활성화 구현
+    /*TIMER_A3->CCTL[0] = TIMER_A_CCTLN_CM_1 | TIMER_A_CCTLN_CCIS_0 | TIMER_A_CCTLN_SCS | TIMER_A_CCTLN_CAP | TIMER_A_CCTLN_CCIE;
+    TIMER_A3->CTL = TIMER_A_CTL_TASSEL_1 | TIMER_A_CTL_MC_2 | TIMER_A_CTL_CLR; // ACLK, Continuous Mode
+    NVIC_EnableIRQ(TA3_N_IRQn);*/ 
+}
+
+// 메인 함수
+void myMain(void) {
+    //Tachometer_Init(); // 타코미터 초기화
+
+    while (1) {
+        FSM_Run();
+
+        
+    }
+}
+
+
+//
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+int direction = NORTH; // 초기 방향
+
+
+
+
+//
+
+
+
+void main(void) {
+//inits..
+
+    while (1) {
+        MoveForwardOneGrid(); if checkgoal get to last point then break; and blink;
+
+        if (posX == TARGET_X && posY == TARGET_Y) {
+            Motor_Stop();
+            Blinker_Output(FR_RGHT + FR_LEFT); //show destination.
+            break;
+        }
+    }
+
+}
+
+
+void TurnLeft(void) {
+
+    direction = (direction == NORTH) ? WEST :
+                (direction == WEST) ? SOUTH :
+                (direction == SOUTH) ? EAST : NORTH;
+}
+
+void TurnRight(void) {
+
+    direction = (direction == NORTH) ? EAST :
+                (direction == EAST) ? SOUTH :
+                (direction == SOUTH) ? WEST : NORTH;
+}
+
